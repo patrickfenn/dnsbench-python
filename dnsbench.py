@@ -9,6 +9,7 @@ import os
 import multiprocessing
 from multiprocessing import Manager
 import ipaddress
+import random
 
 ###############################################################################
 
@@ -17,7 +18,8 @@ NAMESERVER_URL = "https://raw.githubusercontent.com/trickest/resolvers/refs/head
 DOMAIN_URL = "https://raw.githubusercontent.com/Kikobeats/top-sites/refs/heads/master/top-sites.json"
 
 # Configure minimum success rate for a nameserver to be considered viable
-MIN_SUCCESS_PERCENTAGE = 0.8
+# ie. if 9/10 queries return a NXDOMAIN or something it skips that nameserver
+MIN_SUCCESS_PERCENTAGE = 0.9
 
 # Output file that only contains ips of the nameservers
 RANKING_RAW_OUTPUT_FILE = "nameserver_rankings_raw.txt"
@@ -29,7 +31,7 @@ RANKING_STATS_OUTPUT_FILE = "nameserver_rankings_stats.txt"
 NUMBER_RANKINGS = 500
 
 # How long each query will wait until it bails
-RESOLVE_TIMEOUT = 0.1
+RESOLVE_TIMEOUT = 0.2
 
 # How many domains that will be used on each nameserver
 # Note that the MIN_SUCCESS_PERCENTAGE may need to be tweaked
@@ -37,10 +39,10 @@ RESOLVE_TIMEOUT = 0.1
 MAX_DOMAINS = 100
 
 # How many nameservers will be used out of the list downloaded
-#MAX_NAMESERVERS = 100
+MAX_NAMESERVERS = 1000
 
 # How many processes the lookups will be distributed upon
-NUM_PROCESSES = multiprocessing.cpu_count()
+NUM_PROCESSES = 4
 
 # Filter nameserver in the same subnet that are slower than the quickest
 FILTER_SUBNET = True
@@ -170,8 +172,13 @@ def main():
         return
     print(f"Found {len(nameserver_ips)} nameservers.")
     if 'MAX_NAMESERVERS' in globals():
+        # Shuffle incase there is many of the same nameserver sequentially,
+        # it can negatively effect the output if there is a limit placed on how many
+        # nameservers are designated to be used via $MAX_NAMESERVERS
+        random.shuffle(nameserver_ips)
         nameserver_ips = nameserver_ips[:MAX_NAMESERVERS]
     print(f"Using {len(nameserver_ips)} domains for testing.")
+
 
     # 2. Download and parse domain JSON
     print(f"Downloading domains from: {DOMAIN_URL}")
@@ -229,13 +236,15 @@ def main():
             for future in as_completed(futures):
                 batch_results = future.result()
                 for ns_ip, average_time, successful_resolutions, total_domains in batch_results:
-                    nameserver_rankings_list.append((ns_ip, average_time))
+                    if average_time != float('inf'):
+                        nameserver_rankings_list.append((ns_ip, average_time))
             
             print()
     if len(nameserver_rankings_list) == 0:
         print("No nameservers found, issue with resolving.")
         print("Possible issue with domain count and MIN_SUCCESS_PERCENTAGE")
         return
+    print(f"Nameservers benchmarked: {len(nameserver_rankings_list)}")
 
     # 5. Rank nameservers by how quickly they responded
     sorted_rankings = sorted(nameserver_rankings_list, key=lambda item: item[1])
@@ -268,7 +277,6 @@ def main():
                 # Handle cases where ns_ip might not be a valid IP address
                 print(f"Warning: Invalid IP address encountered: {ns_ip}")
                 continue
-        
         print(f"Filtered down to {len(filtered_rankings)} unique subnet nameservers.")
     else:
         print("Skipping subnet filtering.")
