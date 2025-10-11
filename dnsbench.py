@@ -39,7 +39,7 @@ RESOLVE_TIMEOUT = 0.2
 MAX_DOMAINS = 100
 
 # How many nameservers will be used out of the list downloaded
-MAX_NAMESERVERS = 1000
+#MAX_NAMESERVERS = 5000
 
 # How many processes the lookups will be distributed upon
 NUM_PROCESSES = 4
@@ -49,6 +49,17 @@ FILTER_SUBNET = True
 
 ###############################################################################
 
+# Supply your own nameserver file read in function
+"""
+def get_nameservers() -> [str]:
+    ...
+"""
+
+# Supply your own domain file read in function
+"""
+def get_domains() -> [str]:
+    ...
+"""
 
 def download_file(url):
     """Downloads a file from the given URL"""
@@ -70,13 +81,13 @@ def is_valid_ip(ip_str):
 def parse_nameservers(content):
     """Parses a string content into a list of nameserver IPs."""
     if not content:
-        return []
-    nameservers = []
+        return set()
+    nameservers = set()
     for line in content.splitlines():
         line = line.strip()
         if line and is_valid_ip(line):
-            nameservers.append(line)
-    return nameservers
+            nameservers.add(line)
+    return [name for name in nameservers]
 
 def parse_domains(content):
     """Parses JSON content and extracts rootDomain values."""
@@ -99,7 +110,7 @@ async def resolve_domain_async(resolver, domain):
         return (end_time - start_time) * 1000  # Convert to milliseconds
     except (dns.resolver.NXDOMAIN, dns.resolver.NoAnswer, dns.resolver.Timeout,
             dns.exception.DNSException, asyncio.TimeoutError):
-        return float('inf')
+        return -1
 
 async def benchmark_nameserver_async(ns_ip, test_domains):
     """Benchmarks a single nameserver using async DNS resolution."""
@@ -119,7 +130,7 @@ async def benchmark_nameserver_async(ns_ip, test_domains):
         result = await coro
         resol_times.append(result)
         
-        if result == float('inf'):
+        if result == -1:
             failed_count += 1
             
         # Early stopping if too many failures
@@ -129,17 +140,17 @@ async def benchmark_nameserver_async(ns_ip, test_domains):
                 if isinstance(task, asyncio.Task) and not task.done():
                     task.cancel()
             # Mark remaining as failed
-            resol_times.extend([float('inf')] * (len(test_domains) - len(resol_times)))
+            resol_times.extend([-1] * (len(test_domains) - len(resol_times)))
             break
     
-    valid_times = [t for t in resol_times if t != float('inf')]
+    valid_times = [t for t in resol_times if t != -1]
     successful_resolutions = len(valid_times)
     total_domains_tested = len(test_domains)
     
     success_rate = successful_resolutions / total_domains_tested if total_domains_tested > 0 else 0
     
     if success_rate < MIN_SUCCESS_PERCENTAGE or successful_resolutions == 0:
-        average_time = float('inf')
+        average_time = -1
     else:
         average_time = sum(valid_times) / successful_resolutions
     
@@ -161,37 +172,43 @@ def benchmark_nameserver_batch(nameserver_batch, test_domains, progress_queue):
     return results
 
 def main():
-    print("Starting DNS performance test...")
+    print("Starting DNS bench...")
 
-    # 1. Download nameserver list
-    print(f"Downloading nameservers from: {NAMESERVER_URL}")
-    nameserver_content = download_file(NAMESERVER_URL) 
-    nameserver_ips = parse_nameservers(nameserver_content)
-    if not nameserver_ips:
-        print("No nameservers found or downloaded. Exiting.")
-        return
-    print(f"Found {len(nameserver_ips)} nameservers.")
-    if 'MAX_NAMESERVERS' in globals():
-        # Shuffle incase there is many of the same nameserver sequentially,
-        # it can negatively effect the output if there is a limit placed on how many
-        # nameservers are designated to be used via $MAX_NAMESERVERS
-        random.shuffle(nameserver_ips)
-        nameserver_ips = nameserver_ips[:MAX_NAMESERVERS]
+    # 1. Obtain nameserver list
+    if 'get_nameservers' in globals():
+        nameserver_ips = get_nameservers()
+    else:
+        print(f"Downloading nameservers from: {NAMESERVER_URL}")
+        nameserver_content = download_file(NAMESERVER_URL)
+        nameserver_ips = parse_nameservers(nameserver_content)
+        if not nameserver_ips:
+            print("No nameservers found or downloaded. Exiting.")
+            return
+        print(f"Found {len(nameserver_ips)} nameservers.")
+        if 'MAX_NAMESERVERS' in globals():
+            if FILTER_SUBNET is True:
+                # It's possible for there to many nameserver in the same subnet right after another
+                # which would end up getting filtered at the end.
+                random.shuffle(nameserver_ips)
+            nameserver_ips = nameserver_ips[:MAX_NAMESERVERS]
     print(f"Using {len(nameserver_ips)} domains for testing.")
 
 
-    # 2. Download and parse domain JSON
-    print(f"Downloading domains from: {DOMAIN_URL}")
-    domain_content = download_file(DOMAIN_URL)
-    root_domains = parse_domains(domain_content)
-    if not root_domains:
-        print("No domains found or downloaded. Exiting.")
-        return
-    print(f"Found {len(root_domains)} domains.")
-    if 'MAX_DOMAINS' in globals():
-        test_domains = root_domains[:MAX_DOMAINS]
+    # 2. Obtain domains
+    if 'get_domains' in globals():
+        test_domains = get_domans()
     else:
-        test_domains = root_domains
+        print(f"Downloading domains from: {DOMAIN_URL}")
+        domain_content = download_file(DOMAIN_URL)
+        root_domains = parse_domains(domain_content)
+        if not root_domains:
+            print("No domains found or downloaded. Exiting.")
+            return
+        print(f"Found {len(root_domains)} domains.")
+        if 'MAX_DOMAINS' in globals():
+            test_domains = root_domains[:MAX_DOMAINS]
+        else:
+            test_domains = root_domains
     print(f"Using {len(test_domains)} domains for testing.")
 
     # 3. Split nameservers into batches for multiprocessing
@@ -236,7 +253,7 @@ def main():
             for future in as_completed(futures):
                 batch_results = future.result()
                 for ns_ip, average_time, successful_resolutions, total_domains in batch_results:
-                    if average_time != float('inf'):
+                    if average_time != -1:
                         nameserver_rankings_list.append((ns_ip, average_time))
             
             print()
@@ -256,7 +273,7 @@ def main():
 
         # 6. Filter out nameservers that are slower than others in their subnet
         for ns_ip, avg_time in sorted_rankings:
-            if avg_time == float('inf'):
+            if avg_time == -1:
                 continue  # Skip nameservers that failed to resolve
 
             try:
