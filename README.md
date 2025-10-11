@@ -6,8 +6,9 @@ A simple dns benchmark python3 script
 - Multiproccessed, so a large amount of nameservers can be tested quickly.
 - Filters out any nameserver that is not the quickest in a subnet.
 
-Full credit to trickest/resolvers repo for the nameserver list
-Full credit to Kikobeats/top-sites repo for the domain list
+# Credits
+- Full credit to trickest/resolvers repo for the nameserver list
+- Full credit to Kikobeats/top-sites repo for the domain list
 
 # How to run:
 
