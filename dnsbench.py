@@ -18,7 +18,9 @@ NAMESERVER_URL = "https://raw.githubusercontent.com/trickest/resolvers/refs/head
 DOMAIN_URL = "https://raw.githubusercontent.com/Kikobeats/top-sites/refs/heads/master/top-sites.json"
 
 # Configure minimum success rate for a nameserver to be considered viable
-# ie. if 9/10 queries return a NXDOMAIN or something it skips that nameserver
+# ie. if 8/10 queries return a NXDOMAIN or something it skips that nameserver
+# Lowering it may result in nameservers that are on average quicker, but also
+# increases the failure rate.
 MIN_SUCCESS_PERCENTAGE = 0.9
 
 # Output file that only contains ips of the nameservers
@@ -31,21 +33,24 @@ RANKING_STATS_OUTPUT_FILE = "nameserver_rankings_stats.txt"
 NUMBER_RANKINGS = 500
 
 # How long each query will wait until it bails
-RESOLVE_TIMEOUT = 0.2
+RESOLVE_TIMEOUT = 0.5
 
 # How many domains that will be used on each nameserver
 # Note that the MIN_SUCCESS_PERCENTAGE may need to be tweaked
 # if this is too high, or the list is low quality.
-MAX_DOMAINS = 100
+#MAX_DOMAINS = 100
 
 # How many nameservers will be used out of the list downloaded
-#MAX_NAMESERVERS = 5000
+#MAX_NAMESERVERS = 1000
 
 # How many processes the lookups will be distributed upon
 NUM_PROCESSES = 4
 
 # Filter nameserver in the same subnet that are slower than the quickest
 FILTER_SUBNET = True
+
+# Nameserver that is used to filter out domains that may not be valid at the start
+BASELINE_NAMESERVER = "8.8.8.8" # Google nameserver
 
 ###############################################################################
 
@@ -171,8 +176,23 @@ def benchmark_nameserver_batch(nameserver_batch, test_domains, progress_queue):
     
     return results
 
+def validate_domains(test_domains):
+    valid_domains = []
+    resolver = dns.resolver.Resolver(configure=False)
+    resolver.nameservers = [BASELINE_NAMESERVER]
+    for i in range(len(test_domains)):
+        try:
+            resolver.resolve(test_domains[i], 'A')
+            valid_domains.append(test_domains[i])
+            progress = float(i / len(test_domains))
+            print(f"\rProgress: {progress:6.2%}", end="", flush=True)
+        except:
+            pass
+    print()
+    return valid_domains
+
 def main():
-    print("Starting DNS bench...")
+    print("--- Starting DNS Bench ---")
 
     # 1. Obtain nameserver list
     if 'get_nameservers' in globals():
@@ -191,8 +211,7 @@ def main():
                 # which would end up getting filtered at the end.
                 random.shuffle(nameserver_ips)
             nameserver_ips = nameserver_ips[:MAX_NAMESERVERS]
-    print(f"Using {len(nameserver_ips)} domains for testing.")
-
+    print(f"Using {len(nameserver_ips)} nameservers for testing.\n")
 
     # 2. Obtain domains
     if 'get_domains' in globals():
@@ -209,7 +228,9 @@ def main():
             test_domains = root_domains[:MAX_DOMAINS]
         else:
             test_domains = root_domains
-    print(f"Using {len(test_domains)} domains for testing.")
+        print("--- Validating domains using baseline nameserver ---")
+        test_domains = validate_domains(test_domains)
+    print(f"Using {len(test_domains)} domains for testing.\n")
 
     # 3. Split nameservers into batches for multiprocessing
     batch_size = max(1, len(nameserver_ips) // NUM_PROCESSES)
@@ -219,7 +240,7 @@ def main():
     ]
 
     # 4. Run the benchmark
-    print(f"\n--- Benchmarking Nameservers using {NUM_PROCESSES} processes ---")
+    print(f"--- Benchmarking Nameservers using {NUM_PROCESSES} processes ---")
     nameserver_rankings_list = []
     total_nameservers = len(nameserver_ips)
     completed_nameservers = 0
@@ -255,19 +276,18 @@ def main():
                 for ns_ip, average_time, successful_resolutions, total_domains in batch_results:
                     if average_time != -1:
                         nameserver_rankings_list.append((ns_ip, average_time))
-            
             print()
     if len(nameserver_rankings_list) == 0:
         print("No nameservers found, issue with resolving.")
         print("Possible issue with domain count and MIN_SUCCESS_PERCENTAGE")
         return
-    print(f"Nameservers benchmarked: {len(nameserver_rankings_list)}")
+    print(f"Nameservers benchmarked: {len(nameserver_rankings_list)}\n")
 
     # 5. Rank nameservers by how quickly they responded
     sorted_rankings = sorted(nameserver_rankings_list, key=lambda item: item[1])
 
     if FILTER_SUBNET:
-        print("\nFiltering nameservers by subnet...")
+        print("Filtering nameservers by subnet...")
         filtered_rankings = []
         seen_networks = set()
 
@@ -294,9 +314,9 @@ def main():
                 # Handle cases where ns_ip might not be a valid IP address
                 print(f"Warning: Invalid IP address encountered: {ns_ip}")
                 continue
-        print(f"Filtered down to {len(filtered_rankings)} unique subnet nameservers.")
+        print(f"Filtered down to {len(filtered_rankings)} unique subnet nameservers.\n")
     else:
-        print("Skipping subnet filtering.")
+        print("Skipping subnet filtering.\n")
 
     # 7. Dump
     stats_file = open(RANKING_STATS_OUTPUT_FILE, "w")
@@ -308,7 +328,7 @@ def main():
     stats_file.close()
     raw_file.close()
 
-    print(f"\nCompleted! Results saved to {RANKING_RAW_OUTPUT_FILE} and {RANKING_STATS_OUTPUT_FILE}")
+    print(f"Completed! Results saved to {RANKING_RAW_OUTPUT_FILE} and {RANKING_STATS_OUTPUT_FILE}")
 
 if __name__ == "__main__":
     main()
