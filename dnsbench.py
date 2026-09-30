@@ -311,7 +311,6 @@ def main():
                 continue
         print(f"Filtered down to {len(filtered_rankings)} unique subnet nameservers.\n")
     else:
-        filtered_rankings = sorted_rankings
         print("Skipping subnet filtering.\n")
 
     # 7. Dump
