@@ -21,7 +21,7 @@ DOMAIN_URL = "https://raw.githubusercontent.com/Kikobeats/top-sites/refs/heads/m
 # ie. if 8/10 queries return a NXDOMAIN or something it skips that nameserver
 # Lowering it may result in nameservers that are on average quicker, but also
 # increases the failure rate.
-MIN_SUCCESS_PERCENTAGE = 0.9
+MIN_SUCCESS_PERCENTAGE = 0.98
 
 # Output file that only contains ips of the nameservers
 RANKING_RAW_OUTPUT_FILE = "nameserver_rankings_raw.txt"
@@ -56,13 +56,13 @@ BASELINE_NAMESERVER = "8.8.8.8" # Google nameserver
 
 # Supply your own nameserver file read in function
 """
-def get_nameservers() -> [str]:
+def get_nameservers() -> list[str]:
     ...
 """
 
 # Supply your own domain file read in function
 """
-def get_domains() -> [str]:
+def get_domains() -> list[str]:
     ...
 """
 
@@ -123,42 +123,37 @@ async def benchmark_nameserver_async(ns_ip, test_domains):
     resolver.nameservers = [ns_ip]
     resolver.timeout = RESOLVE_TIMEOUT
     resolver.lifetime = RESOLVE_TIMEOUT
-    
+
     resol_times = []
     failed_count = 0
-    
-    # Create all tasks
-    tasks = [resolve_domain_async(resolver, domain) for domain in test_domains]
 
-    # Process results as they complete
+    tasks = [asyncio.create_task(resolve_domain_async(resolver, domain)) for domain in test_domains]
+
     for coro in asyncio.as_completed(tasks):
         result = await coro
         resol_times.append(result)
-        
+
         if result == -1:
             failed_count += 1
-            
-        # Early stopping if too many failures
+
         if failed_count > len(test_domains) * (1 - MIN_SUCCESS_PERCENTAGE):
-            # Cancel remaining tasks
             for task in tasks:
-                if isinstance(task, asyncio.Task) and not task.done():
+                if not task.done():
                     task.cancel()
-            # Mark remaining as failed
             resol_times.extend([-1] * (len(test_domains) - len(resol_times)))
             break
-    
+
     valid_times = [t for t in resol_times if t != -1]
     successful_resolutions = len(valid_times)
     total_domains_tested = len(test_domains)
-    
+
     success_rate = successful_resolutions / total_domains_tested if total_domains_tested > 0 else 0
-    
+
     if success_rate < MIN_SUCCESS_PERCENTAGE or successful_resolutions == 0:
         average_time = -1
     else:
         average_time = sum(valid_times) / successful_resolutions
-    
+
     return ns_ip, average_time, successful_resolutions, total_domains_tested
 
 def benchmark_nameserver(ns_ip, test_domains):
@@ -168,12 +163,12 @@ def benchmark_nameserver(ns_ip, test_domains):
 def benchmark_nameserver_batch(nameserver_batch, test_domains, progress_queue):
     """Benchmarks a batch of nameservers."""
     results = []
-    
+
     for ns_ip in nameserver_batch:
         result = benchmark_nameserver(ns_ip, test_domains)
         results.append(result)
         progress_queue.put(1)
-    
+
     return results
 
 def validate_domains(test_domains):
@@ -186,7 +181,7 @@ def validate_domains(test_domains):
             valid_domains.append(test_domains[i])
             progress = float(i / len(test_domains))
             print(f"\rProgress: {progress:6.2%}", end="", flush=True)
-        except:
+        except Exception:
             pass
     print()
     return valid_domains
@@ -215,7 +210,7 @@ def main():
 
     # 2. Obtain domains
     if 'get_domains' in globals():
-        test_domains = get_domans()
+        test_domains = get_domains()
     else:
         print(f"Downloading domains from: {DOMAIN_URL}")
         domain_content = download_file(DOMAIN_URL)
@@ -235,7 +230,7 @@ def main():
     # 3. Split nameservers into batches for multiprocessing
     batch_size = max(1, len(nameserver_ips) // NUM_PROCESSES)
     nameserver_batches = [
-        nameserver_ips[i:i + batch_size] 
+        nameserver_ips[i:i + batch_size]
         for i in range(0, len(nameserver_ips), batch_size)
     ]
 
@@ -248,14 +243,14 @@ def main():
     # Create a manager and queue for progress tracking
     with Manager() as manager:
         progress_queue = manager.Queue()
-        
+
         # Use ProcessPoolExecutor for parallel processing
         with ProcessPoolExecutor(max_workers=NUM_PROCESSES) as process_executor:
             futures = {
-                process_executor.submit(benchmark_nameserver_batch, batch, test_domains, progress_queue): batch 
+                process_executor.submit(benchmark_nameserver_batch, batch, test_domains, progress_queue): batch
                 for batch in nameserver_batches
             }
-            
+
             # Monitor progress queue
             all_done = False
             while not all_done:
@@ -264,12 +259,12 @@ def main():
                     completed_nameservers += 1
                     progress = float(completed_nameservers / total_nameservers)
                     print(f"\rProgress: {progress:6.2%}", end="", flush=True)
-                
+
                 all_done = all(future.done() for future in futures)
-                
+
                 if not all_done:
                     time.sleep(0.05)
-            
+
             # Collect results
             for future in as_completed(futures):
                 batch_results = future.result()
@@ -319,14 +314,11 @@ def main():
         print("Skipping subnet filtering.\n")
 
     # 7. Dump
-    stats_file = open(RANKING_STATS_OUTPUT_FILE, "w")
-    raw_file = open(RANKING_RAW_OUTPUT_FILE, "w")
-    for rank, (ns_ip, avg_time) in enumerate(filtered_rankings[:NUMBER_RANKINGS]):
-        stats_file.write(f"{rank+1}. Nameserver: {ns_ip} - Average Resolution Time: {avg_time:.2f} ms\n")
-        raw_file.write(f"{ns_ip}\n")
-
-    stats_file.close()
-    raw_file.close()
+    with open(RANKING_STATS_OUTPUT_FILE, "w") as stats_file, \
+         open(RANKING_RAW_OUTPUT_FILE, "w") as raw_file:
+        for rank, (ns_ip, avg_time) in enumerate(filtered_rankings[:NUMBER_RANKINGS]):
+            stats_file.write(f"{rank+1}. Nameserver: {ns_ip} - Average Resolution Time: {avg_time:.2f} ms\n")
+            raw_file.write(f"{ns_ip}\n")
 
     print(f"Completed! Results saved to {RANKING_RAW_OUTPUT_FILE} and {RANKING_STATS_OUTPUT_FILE}")
 
